@@ -4,6 +4,7 @@ import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+import os
 
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -16,6 +17,7 @@ SEQ_LENGTH = 30
 EPOCHS = 10
 BATCH_SIZE = 32
 LR = 0.001
+model_url = "model_anomaly-1.pth"
 
 if torch.cuda.is_available():  
   dev = "cuda:0" 
@@ -56,7 +58,7 @@ class TransformerModel(nn.Module):
         self.embedding = nn.Linear(input_dim, model_dim)
         
         # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=n_heads, dropout=dropout)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=n_heads, dropout=dropout, batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
         
         self.fc_out = nn.Linear(model_dim, input_dim)
@@ -97,7 +99,17 @@ test_loader = DataLoader(TensorDataset(torch.tensor(X_test).float().unsqueeze(-1
                          batch_size=BATCH_SIZE, shuffle=False)
 
 # Model, Loss, Optimizer
-model = TransformerModel(INPUT_DIM, MODEL_DIM, N_HEADS, N_LAYERS)
+if (device == "cuda:0"):
+    model = TransformerModel(INPUT_DIM, MODEL_DIM, N_HEADS, N_LAYERS).to(device)
+else:
+    model = TransformerModel(INPUT_DIM, MODEL_DIM, N_HEADS, N_LAYERS)
+
+if os.path.exists(model_url):
+    print("Model file exists. Ready to load!")
+    model.load_state_dict(torch.load(model_url))
+else:
+    print("Model file not found. Train and save the model first.")
+
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=LR)
 
@@ -105,3 +117,4 @@ for epoch in range(EPOCHS):
     train_loss = train(model, train_loader, criterion, optimizer)
     print(f"Epoch [{epoch+1}/{EPOCHS}], Loss: {train_loss:.4f}")
 
+torch.save(model.state_dict(), model_url)
