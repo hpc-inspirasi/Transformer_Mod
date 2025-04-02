@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
+import os
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
 
@@ -61,6 +62,14 @@ model = TransformerAnomalyDetector(input_dim=data.shape[1], num_heads=5).to(devi
 criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
+# Check if saved model exists
+save_path = "checkpoints/transformer_anomaly_detector.pth"
+if os.path.exists(save_path):
+    print(f"Loading saved model from {save_path}")
+    model.load_state_dict(torch.load(save_path))
+else:
+    print("No saved model found, starting training from scratch.")
+
 # Training loop
 num_epochs = 10
 for epoch in range(num_epochs):
@@ -76,7 +85,14 @@ for epoch in range(num_epochs):
     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(dataloader):.4f}")
 
 # Save model
-torch.save(model.state_dict(), "checkpoints/transformer_anomaly_detector.pth")
+os.makedirs(os.path.dirname(save_path), exist_ok=True)
+torch.save(model.state_dict(), save_path)
+
+# Check if model is saved
+if os.path.exists(save_path):
+    print(f"Model successfully saved at {save_path}")
+else:
+    print("Error: Model save failed!")
 
 # Visualization
 plt.figure(figsize=(12, 6))
