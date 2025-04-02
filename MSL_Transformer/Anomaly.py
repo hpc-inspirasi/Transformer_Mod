@@ -57,7 +57,7 @@ dataloader_test = DataLoader(dataset_test, batch_size=32, shuffle=False)
 class TransformerAnomalyDetector(nn.Module):
     def __init__(self, input_dim, num_heads=4, hidden_dim=128, num_layers=2):
         super().__init__()
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads)
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads, batch_first=True)
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(input_dim, 1)
     
