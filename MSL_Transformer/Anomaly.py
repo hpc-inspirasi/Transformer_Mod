@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import os
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import roc_auc_score, accuracy_score
+from sklearn.metrics import roc_auc_score, accuracy_score, f1_score
 
 # Check if CUDA is available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -120,7 +120,8 @@ pred_labels = (np.array(predictions) > threshold).astype(int)
 y_true = np.array(ground_truths)
 accuracy = accuracy_score(y_true, pred_labels)
 auc_score = roc_auc_score(y_true, predictions)
-print(f"Test Accuracy: {accuracy:.4f}, AUC Score: {auc_score:.4f}")
+f1 = f1_score(y_true, pred_labels)
+print(f"Test Accuracy: {accuracy:.4f}, AUC Score: {auc_score:.4f}, F1 Score: {f1:.4f}")
 
 # Visualization
 plt.figure(figsize=(12, 6))
