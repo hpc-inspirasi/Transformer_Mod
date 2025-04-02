@@ -66,16 +66,30 @@ class TransformerAnomalyDetector(nn.Module):
         x = self.fc(x[:, -1, :])  # Use last output token
         return x.squeeze()
 
-# Initialize model, loss function, and optimizer
-model = TransformerAnomalyDetector(input_dim=train_data.shape[1], num_heads=5).to(device)
+# Transformer Model for Trend Detection
+class TransformerTrendDetector(nn.Module):
+    def __init__(self, input_dim, num_heads=4, hidden_dim=128, num_layers=2):
+        super().__init__()
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads, batch_first=True)
+        self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
+        self.fc = nn.Linear(input_dim, 1)
+    
+    def forward(self, x):
+        x = self.transformer(x)
+        x = self.fc(x[:, -1, :])  # Use last output token
+        return x.squeeze()
+
+# Initialize models
+anomaly_model = TransformerAnomalyDetector(input_dim=train_data.shape[1], num_heads=5).to(device)
+trend_model = TransformerTrendDetector(input_dim=train_data.shape[1], num_heads=5).to(device)
 criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.Adam(anomaly_model.parameters(), lr=0.001)
 
 # Check if saved model exists
 save_path = "checkpoints/transformer_anomaly_detector.pth"
 if os.path.exists(save_path):
     print(f"Loading saved model from {save_path}")
-    model.load_state_dict(torch.load(save_path))
+    anomaly_model.load_state_dict(torch.load(save_path))
 else:
     print("No saved model found, starting training from scratch.")
 
@@ -86,7 +100,7 @@ for epoch in range(num_epochs):
     for batch_X, batch_y in dataloader_train:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         optimizer.zero_grad()
-        outputs = model(batch_X)
+        outputs = anomaly_model(batch_X)
         loss = criterion(outputs, batch_y)
         loss.backward()
         optimizer.step()
@@ -95,40 +109,25 @@ for epoch in range(num_epochs):
 
 # Save model
 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-torch.save(model.state_dict(), save_path)
+torch.save(anomaly_model.state_dict(), save_path)
 
-# Check if model is saved
-if os.path.exists(save_path):
-    print(f"Model successfully saved at {save_path}")
-else:
-    print("Error: Model save failed!")
-
-# Evaluation on test data
-model.eval()
-predictions, ground_truths = [], []
+# Reconstruction using Anomaly and Trend Model
+anomaly_model.eval()
+trend_model.eval()
+reconstructed_signals = []
 with torch.no_grad():
-    for batch_X, batch_y in dataloader_test:
-        batch_X, batch_y = batch_X.to(device), batch_y.to(device)
-        outputs = model(batch_X)
-        preds = torch.sigmoid(outputs).cpu().numpy()
-        predictions.extend(preds)
-        ground_truths.extend(batch_y.cpu().numpy())
-
-# Compute evaluation metrics
-threshold = 0.5  # Default threshold for binary classification
-pred_labels = (np.array(predictions) > threshold).astype(int)
-y_true = np.array(ground_truths)
-accuracy = accuracy_score(y_true, pred_labels)
-auc_score = roc_auc_score(y_true, predictions)
-f1 = f1_score(y_true, pred_labels)
-precision = precision_score(y_true, pred_labels)
-recall = recall_score(y_true, pred_labels)
-print(f"Test Accuracy: {accuracy:.4f}, AUC Score: {auc_score:.4f}, F1 Score: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
+    for batch_X, _ in dataloader_test:
+        batch_X = batch_X.to(device)
+        anomaly_outputs = anomaly_model(batch_X)
+        trend_outputs = trend_model(batch_X)
+        reconstructed = anomaly_outputs + trend_outputs  # Combining anomaly and trend predictions
+        reconstructed_signals.extend(reconstructed.cpu().numpy())
 
 # Visualization
 plt.figure(figsize=(12, 6))
+plt.plot(reconstructed_signals, label="Reconstructed Signal", color="green", alpha=0.7)
 plt.plot(y_true, label="True Anomalies", color="red")
 plt.plot(predictions, label="Predicted Scores", color="blue", alpha=0.7)
-plt.title("Anomaly Detection Results on MSL Dataset")
+plt.title("Anomaly Detection and Trend Reconstruction on MSL Dataset")
 plt.legend()
 plt.show()
