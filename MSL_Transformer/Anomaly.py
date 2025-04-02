@@ -14,8 +14,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Load dataset
-train_path = "dataset/MSL/MSL_train.npy"
-test_path = "dataset/MSL/MSL_test.npy"
+train_path = "dataset/MSL/MSL_train_2500.npy"
+test_path = "dataset/MSL/MSL_test_2500.npy"
 labels_path = "dataset/MSL/MSL_test_label.npy"
 
 train_data = np.load(train_path, allow_pickle=True)
