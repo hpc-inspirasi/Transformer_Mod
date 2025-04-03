@@ -8,14 +8,15 @@ import os
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, precision_score, recall_score
+from torch.utils.tensorboard import SummaryWriter
 
 # Check if CUDA is available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Load dataset
-train_path = "dataset/MSL/MSL_train.npy"
-test_path = "dataset/MSL/MSL_test.npy"
+train_path = "dataset/MSL/MSL_train_2500.npy"
+test_path = "dataset/MSL/MSL_test_2500.npy"
 labels_path = "dataset/MSL/MSL_test_label.npy"
 
 train_data = np.load(train_path, allow_pickle=True)
@@ -80,10 +81,12 @@ class TransformerTrendDetector(nn.Module):
         return x.squeeze()
 
 # Initialize models
+num_models = 3  # Number of models in the ensemble
 anomaly_model = TransformerAnomalyDetector(input_dim=train_data.shape[1], num_heads=5).to(device)
 trend_model = TransformerTrendDetector(input_dim=train_data.shape[1], num_heads=5).to(device)
 criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam(anomaly_model.parameters(), lr=0.001)
+writer = SummaryWriter(log_dir='runs/anomaly_detection')
 
 # Check if saved model exists
 save_path = "checkpoints/transformer_anomaly_detector.pth"
@@ -100,21 +103,39 @@ for epoch in range(num_epochs):
     for batch_X, batch_y in dataloader_train:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         optimizer.zero_grad()
-        outputs = anomaly_model(batch_X)
-        loss = criterion(outputs, batch_y)
-        loss.backward()
+        losses = []
+        for model in anomaly_models:
+            outputs = model(batch_X)
+            loss = criterion(outputs, batch_y)
+            losses.append(loss)
+        avg_loss = torch.mean(torch.stack(losses))
+        avg_loss.backward()
         optimizer.step()
-        total_loss += loss.item()
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(dataloader_train):.4f}")
+        total_loss += avg_loss.item()
+        # total_loss += torch.mean(torch.stack(losses)).item()  # Average loss across all models
+        for loss in losses:
+            loss.backward()
+        optimizer.step()
+    # Log loss ke TensorBoard
+    writer.add_scalar('Loss/train', total_loss / len(dataloader_train), epoch)
+    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(dataloader_train):.4f}")    
+writer.close()
 
 # Save model
 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-torch.save(anomaly_model.state_dict(), save_path)
+torch.save(anomaly_models[0].state_dict(), save_path)
+
+# Check if model is saved
+if os.path.exists(save_path):
+    print(f"Model successfully saved at {save_path}")
+else:
+    print("Error: Model save failed!")
 
 # Reconstruction using Anomaly and Trend Model
 anomaly_model.eval()
 trend_model.eval()
 reconstructed_signals = []
+
 with torch.no_grad():
     for batch_X, _ in dataloader_test:
         batch_X = batch_X.to(device)
