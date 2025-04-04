@@ -59,11 +59,16 @@ dataloader_test = DataLoader(dataset_test, batch_size=32, shuffle=False)
 class TransformerAnomalyDetector(nn.Module):
     def __init__(self, input_dim, num_heads=4, hidden_dim=128, num_layers=2):
         super().__init__()
+        self.attn_weights = None
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads, batch_first=True)
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(input_dim, 1)
 
     def forward(self, x):
+        # Register hook to capture attention weights
+        def hook(module, input, output):
+            self.attn_weights = module.self_attn.attn_output_weights.detach().cpu().numpy()
+        self.encoder_layer.self_attn.register_forward_hook(hook)
         x = self.transformer(x)
         x = self.fc(x[:, -1, :]) # Use last output token
         return x.squeeze()
@@ -75,7 +80,7 @@ class TransformerTrendDetector(nn.Module):
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads, batch_first=True)
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(input_dim, 1)
- 
+
     def forward(self, x):
         x = self.transformer(x)
         x = self.fc(x[:, -1, :]) # Use last output token
@@ -86,7 +91,6 @@ num_models = 3 # Number of models in the ensemble
 anomaly_models = [TransformerAnomalyDetector(input_dim=train_data.shape[1], num_heads=5).to(device) for _ in range(num_models)]
 trend_models = [TransformerTrendDetector(input_dim=train_data.shape[1], num_heads=5).to(device) for _ in range(num_models)]
 criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(anomaly_models[0].parameters(), lr=0.001)
 writer = SummaryWriter(log_dir='runs/anomaly_detection')
 
 # Check if saved model exists
@@ -100,20 +104,20 @@ else:
 
 # Training loop
 num_epochs = 10
+optimizer = optim.Adam(anomaly_models[0].parameters(), lr=0.001)
 for epoch in range(num_epochs):
     total_loss = 0
     for batch_X, batch_y in dataloader_train:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         optimizer.zero_grad()
         losses = []
-    for model in anomaly_models:
-        outputs = model(batch_X)
-        loss = criterion(outputs, batch_y)
-        losses.append(loss)
-        total_loss += torch.mean(torch.stack(losses)).item() # Average loss across all models
-
-    for loss in losses:
-        loss.backward()
+        for model in anomaly_models:
+            outputs = model(batch_X)
+            loss = criterion(outputs, batch_y)
+            losses.append(loss)
+        total_loss += torch.mean(torch.stack(losses)).item()
+        for loss in losses:
+            loss.backward()
         optimizer.step()
     writer.add_scalar('Loss/train', total_loss / len(dataloader_train), epoch)
     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(dataloader_train):.4f}")
@@ -135,34 +139,56 @@ for model in anomaly_models:
 
 predictions, ground_truths = [], []
 reconstructed_signals = []
+attention_weights_list = []
 
 with torch.no_grad():
     for batch_X, batch_y in dataloader_test:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         model_outputs = [model(batch_X) for model in anomaly_models]
-        reconstructed_signals.extend(reconstructed.cpu().numpy())
-        # Hard voting: Get majority vote from the model outputs
-        votes = [torch.sign(output).cpu().numpy() for output in model_outputs]
-        majority_vote = np.sign(np.sum(votes, axis=0)) # Majority vote: +1 for anomaly, -1 for normal
-        predictions.extend(majority_vote)
+        probs = np.mean([torch.sigmoid(output).cpu().numpy() for output in model_outputs], axis=0)
+        pred_labels = (probs > 0.5).astype(int)
+        predictions.extend(probs)
         ground_truths.extend(batch_y.cpu().numpy())
+        reconstructed_signals.extend(model_outputs[0].cpu().numpy())
+        # Capture attention weights from first model
+        if hasattr(anomaly_models[0], 'attn_weights') and anomaly_models[0].attn_weights is not None:
+            attention_weights_list.append(anomaly_models[0].attn_weights)
 
-    # Compute evaluation metrics
-    threshold = 0.5 # Default threshold for binary classification
-    pred_labels = (np.array(predictions) > threshold).astype(int)
     y_true = np.array(ground_truths)
-    accuracy = accuracy_score(y_true, pred_labels)
+    pred_binary = (np.array(predictions) > 0.5).astype(int)
+    accuracy = accuracy_score(y_true, pred_binary)
     auc_score = roc_auc_score(y_true, predictions)
-    f1 = f1_score(y_true, pred_labels)
-    precision = precision_score(y_true, pred_labels)
-    recall = recall_score(y_true, pred_labels)
+    f1 = f1_score(y_true, pred_binary)
+    precision = precision_score(y_true, pred_binary)
+    recall = recall_score(y_true, pred_binary)
     print(f"Test Accuracy: {accuracy:.4f}, AUC Score: {auc_score:.4f}, F1 Score: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
 
 # Visualization
 plt.figure(figsize=(12, 6))
 plt.plot(reconstructed_signals, label="Reconstructed Signal", color="green", alpha=0.7)
 plt.plot(y_true, label="True Anomalies", color="red")
-plt.plot(predictions, label="Predicted Anomalies (Ensemble - Voting)", color="blue", alpha=0.7)
+plt.plot(pred_binary, label="Predicted Anomalies (Ensemble - Voting)", color="blue", alpha=0.7)
 plt.title("Anomaly Detection Results on MSL Dataset (Ensemble - Hard Voting)")
 plt.legend()
 plt.show()
+
+# Export Predictions
+output_df = pd.DataFrame({
+    "true_label": y_true,
+    "predicted_prob": predictions,
+    "predicted_label": pred_binary
+})
+os.makedirs("results", exist_ok=True)
+output_df.to_csv("results/anomaly_predictions.csv", index=False)
+print("Predictions exported to results/anomaly_predictions.csv")
+
+# Visualize attention weights from the first sequence
+if attention_weights_list:
+    avg_attn_weights = np.mean(attention_weights_list[0], axis=0)
+    plt.figure(figsize=(10, 6))
+    plt.imshow(avg_attn_weights, cmap='viridis')
+    plt.colorbar(label="Attention Weight")
+    plt.title("Attention Weights from Transformer Encoder")
+    plt.xlabel("Key Position")
+    plt.ylabel("Query Position")
+    plt.show()
