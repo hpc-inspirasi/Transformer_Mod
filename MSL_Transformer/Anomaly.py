@@ -19,7 +19,8 @@ print(f"Using device: {device}")
 
 # Load dataset
 parser = argparse.ArgumentParser()
-parser.add_argument("--chunk", type=str, help="Chunk data")
+parser.add_argument("--chunk", type=str, help="Chunk data.")
+parser.add_argument("--showplot", type=str, help="Show plot graphics.")
 args = parser.parse_args()
 
 if (args.chunk == "True"):
@@ -183,7 +184,9 @@ plt.plot(y_true, label="True Anomalies", color="red")
 plt.plot(pred_binary, label="Predicted Anomalies (Ensemble - Voting)", color="blue", alpha=0.7)
 plt.title("Anomaly Detection Results on MSL Dataset (Ensemble - Hard Voting)")
 plt.legend()
-plt.show()
+
+if (args.showplot == "True"):
+    plt.show()    
 
 # Export Predictions
 output_df = pd.DataFrame({
