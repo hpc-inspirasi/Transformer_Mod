@@ -118,7 +118,7 @@ else:
 # Training loop
 num_epochs = 10
 optimizer = optim.Adam(anomaly_models[0].parameters(), lr=0.001)
-for epoch in tqdm(enumerate(range(num_epochs))):
+for epoch in tqdm(range(num_epochs)):
     total_loss = 0
     for batch_X, batch_y in dataloader_train:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
@@ -155,7 +155,7 @@ reconstructed_signals = []
 attention_weights_list = []
 
 with torch.no_grad():
-    for batch_X, batch_y in tqdm(enumerate(dataloader_test)):
+    for batch_X, batch_y in tqdm(dataloader_test, desc=f"Progress: "):        
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         model_outputs = [model(batch_X) for model in anomaly_models]
         probs = np.mean([torch.sigmoid(output).cpu().numpy() for output in model_outputs], axis=0)
