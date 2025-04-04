@@ -8,6 +8,7 @@ import os
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, precision_score, recall_score
+from collections import Counter
 from torch.utils.tensorboard import SummaryWriter
 
 # Check if CUDA is available
@@ -44,7 +45,7 @@ def create_sequences(data, labels, seq_length):
         seq_labels.append(labels[i+seq_length])
     return torch.stack(sequences).to(device), torch.tensor(seq_labels).to(device)
 
-seq_length = 50  # Window size for time series
+seq_length = 50 # Window size for time series
 X_train, y_train = create_sequences(train_tensor, labels_tensor, seq_length)
 X_test, y_test = create_sequences(test_tensor, labels_tensor, seq_length)
 
@@ -61,10 +62,10 @@ class TransformerAnomalyDetector(nn.Module):
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads, batch_first=True)
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(input_dim, 1)
-    
+
     def forward(self, x):
         x = self.transformer(x)
-        x = self.fc(x[:, -1, :])  # Use last output token
+        x = self.fc(x[:, -1, :]) # Use last output token
         return x.squeeze()
 
 # Transformer Model for Trend Detection
@@ -74,25 +75,26 @@ class TransformerTrendDetector(nn.Module):
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=num_heads, batch_first=True)
         self.transformer = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
         self.fc = nn.Linear(input_dim, 1)
-    
+ 
     def forward(self, x):
         x = self.transformer(x)
-        x = self.fc(x[:, -1, :])  # Use last output token
+        x = self.fc(x[:, -1, :]) # Use last output token
         return x.squeeze()
 
 # Initialize models
-num_models = 3  # Number of models in the ensemble
-anomaly_model = TransformerAnomalyDetector(input_dim=train_data.shape[1], num_heads=5).to(device)
-trend_model = TransformerTrendDetector(input_dim=train_data.shape[1], num_heads=5).to(device)
+num_models = 3 # Number of models in the ensemble
+anomaly_models = [TransformerAnomalyDetector(input_dim=train_data.shape[1], num_heads=5).to(device) for _ in range(num_models)]
+trend_models = [TransformerTrendDetector(input_dim=train_data.shape[1], num_heads=5).to(device) for _ in range(num_models)]
 criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.Adam(anomaly_model.parameters(), lr=0.001)
+optimizer = optim.Adam(anomaly_models[0].parameters(), lr=0.001)
 writer = SummaryWriter(log_dir='runs/anomaly_detection')
 
 # Check if saved model exists
 save_path = "checkpoints/transformer_anomaly_detector.pth"
 if os.path.exists(save_path):
     print(f"Loading saved model from {save_path}")
-    anomaly_model.load_state_dict(torch.load(save_path))
+    for model in anomaly_models:
+        model.load_state_dict(torch.load(save_path))
 else:
     print("No saved model found, starting training from scratch.")
 
@@ -104,21 +106,17 @@ for epoch in range(num_epochs):
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         optimizer.zero_grad()
         losses = []
-        for model in anomaly_models:
-            outputs = model(batch_X)
-            loss = criterion(outputs, batch_y)
-            losses.append(loss)
-        avg_loss = torch.mean(torch.stack(losses))
-        avg_loss.backward()
+    for model in anomaly_models:
+        outputs = model(batch_X)
+        loss = criterion(outputs, batch_y)
+        losses.append(loss)
+        total_loss += torch.mean(torch.stack(losses)).item() # Average loss across all models
+
+    for loss in losses:
+        loss.backward()
         optimizer.step()
-        total_loss += avg_loss.item()
-        # total_loss += torch.mean(torch.stack(losses)).item()  # Average loss across all models
-        for loss in losses:
-            loss.backward()
-        optimizer.step()
-    # Log loss ke TensorBoard
     writer.add_scalar('Loss/train', total_loss / len(dataloader_train), epoch)
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(dataloader_train):.4f}")    
+    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(dataloader_train):.4f}")
 writer.close()
 
 # Save model
@@ -131,24 +129,40 @@ if os.path.exists(save_path):
 else:
     print("Error: Model save failed!")
 
-# Reconstruction using Anomaly and Trend Model
-anomaly_model.eval()
-trend_model.eval()
+# Evaluation on test data (Ensemble using Hard Voting)
+for model in anomaly_models:
+    model.eval()
+
+predictions, ground_truths = [], []
 reconstructed_signals = []
 
 with torch.no_grad():
-    for batch_X, _ in dataloader_test:
-        batch_X = batch_X.to(device)
-        anomaly_outputs = anomaly_model(batch_X)
-        trend_outputs = trend_model(batch_X)
-        reconstructed = anomaly_outputs + trend_outputs  # Combining anomaly and trend predictions
+    for batch_X, batch_y in dataloader_test:
+        batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+        model_outputs = [model(batch_X) for model in anomaly_models]
         reconstructed_signals.extend(reconstructed.cpu().numpy())
+        # Hard voting: Get majority vote from the model outputs
+        votes = [torch.sign(output).cpu().numpy() for output in model_outputs]
+        majority_vote = np.sign(np.sum(votes, axis=0)) # Majority vote: +1 for anomaly, -1 for normal
+        predictions.extend(majority_vote)
+        ground_truths.extend(batch_y.cpu().numpy())
+
+    # Compute evaluation metrics
+    threshold = 0.5 # Default threshold for binary classification
+    pred_labels = (np.array(predictions) > threshold).astype(int)
+    y_true = np.array(ground_truths)
+    accuracy = accuracy_score(y_true, pred_labels)
+    auc_score = roc_auc_score(y_true, predictions)
+    f1 = f1_score(y_true, pred_labels)
+    precision = precision_score(y_true, pred_labels)
+    recall = recall_score(y_true, pred_labels)
+    print(f"Test Accuracy: {accuracy:.4f}, AUC Score: {auc_score:.4f}, F1 Score: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
 
 # Visualization
 plt.figure(figsize=(12, 6))
 plt.plot(reconstructed_signals, label="Reconstructed Signal", color="green", alpha=0.7)
 plt.plot(y_true, label="True Anomalies", color="red")
-plt.plot(predictions, label="Predicted Scores", color="blue", alpha=0.7)
-plt.title("Anomaly Detection and Trend Reconstruction on MSL Dataset")
+plt.plot(predictions, label="Predicted Anomalies (Ensemble - Voting)", color="blue", alpha=0.7)
+plt.title("Anomaly Detection Results on MSL Dataset (Ensemble - Hard Voting)")
 plt.legend()
 plt.show()
