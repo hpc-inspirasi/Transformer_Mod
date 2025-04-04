@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 import os
+import argparse
+from tqdm import tqdm
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, precision_score, recall_score
@@ -16,8 +18,19 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # Load dataset
-train_path = "dataset/MSL/MSL_train_2500.npy"
-test_path = "dataset/MSL/MSL_test_2500.npy"
+parser = argparse.ArgumentParser()
+parser.add_argument("--chunk", type=str, help="Chunk data")
+args = parser.parse_args()
+
+if (args.chunk == "True"):
+    print("Using chunk data.")
+    train_path = "dataset/MSL/MSL_train_2500.npy"
+    test_path = "dataset/MSL/MSL_test_2500.npy"
+else:
+    print("Using real data.")
+    train_path = "dataset/MSL/MSL_train.npy"
+    test_path = "dataset/MSL/MSL_test.npy"
+
 labels_path = "dataset/MSL/MSL_test_label.npy"
 
 train_data = np.load(train_path, allow_pickle=True)
@@ -105,7 +118,7 @@ else:
 # Training loop
 num_epochs = 10
 optimizer = optim.Adam(anomaly_models[0].parameters(), lr=0.001)
-for epoch in range(num_epochs):
+for epoch in tqdm(enumerate(range(num_epochs))):
     total_loss = 0
     for batch_X, batch_y in dataloader_train:
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
@@ -142,7 +155,7 @@ reconstructed_signals = []
 attention_weights_list = []
 
 with torch.no_grad():
-    for batch_X, batch_y in dataloader_test:
+    for batch_X, batch_y in tqdm(enumerate(dataloader_test)):
         batch_X, batch_y = batch_X.to(device), batch_y.to(device)
         model_outputs = [model(batch_X) for model in anomaly_models]
         probs = np.mean([torch.sigmoid(output).cpu().numpy() for output in model_outputs], axis=0)
